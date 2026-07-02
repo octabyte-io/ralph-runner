@@ -11,7 +11,16 @@ pnpm add -D github:octabyte-io/ralph-runner#v0.1.0   # or npm i -D / yarn add -D
 pnpm ralph init                                       # scaffold .ralph/
 ```
 
-Requires **Node ≥ 24** (the TypeScript sources run directly — no build step, zero runtime dependencies), plus `git`, an authenticated `gh` CLI, and the `claude` CLI.
+**pnpm ≥ 10 users:** pnpm blocks dependency build scripts by default, and ralph-runner compiles itself on install. Allow it first:
+
+```jsonc
+// package.json
+"pnpm": { "onlyBuiltDependencies": ["ralph-runner"] }
+```
+
+(or run `pnpm approve-builds` after adding). npm and yarn need nothing extra.
+
+Requires **Node ≥ 24**, zero runtime dependencies, plus `git`, an authenticated `gh` CLI, and the `claude` CLI.
 
 `ralph init` writes:
 
