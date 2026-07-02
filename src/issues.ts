@@ -1,5 +1,5 @@
 import { runOk, retry } from './proc.ts'
-import { READY_LABEL, IN_PROGRESS_LABEL, UNDER_REVIEW_LABEL } from './config.ts'
+import type { LabelsConfig, PriorityConfig } from './config.ts'
 
 export interface Issue {
   number: number
@@ -30,36 +30,44 @@ export function parseBlockedBy(body: string): number[] {
   return [...new Set([...refs].map((m) => Number(m[1])))]
 }
 
-/** Lower rank = worked first. Mirrors ralph-prompt.md's priority order. */
-export function priorityRank(issue: Issue): number {
+/** Lower rank = worked first; label ranks win over title patterns. */
+export function priorityRank(issue: Issue, priority: PriorityConfig): number {
   const labels = issue.labels.map((l) => l.toLowerCase())
-  if (labels.includes('bug')) return 0
-  if (/tracer/i.test(issue.title)) return 1
-  if (/polish/i.test(issue.title) || labels.includes('documentation')) return 2
-  if (/refactor/i.test(issue.title)) return 4
-  return 3
+  const labelRanks = labels
+    .map((l) => priority.labelRanks[l])
+    .filter((r): r is number => r !== undefined)
+  if (labelRanks.length > 0) return Math.min(...labelRanks)
+  for (const rule of priority.titleRanks) {
+    if (new RegExp(rule.pattern, 'i').test(issue.title)) return rule.rank
+  }
+  return priority.defaultRank
 }
 
-export function sortByPriority(issues: Issue[]): Issue[] {
+export function sortByPriority(issues: Issue[], priority: PriorityConfig): Issue[] {
   return [...issues].sort(
-    (a, b) => priorityRank(a) - priorityRank(b) || a.number - b.number,
+    (a, b) => priorityRank(a, priority) - priorityRank(b, priority) || a.number - b.number,
   )
 }
 
 /** PRD issues describe scope; they are not directly implementable. */
-export function isWorkable(issue: Issue): boolean {
+export function isWorkable(issue: Issue, cfgLabels: LabelsConfig): boolean {
   if (/^\s*prd\b[:\s]/i.test(issue.title)) return false
   const labels = issue.labels.map((l) => l.toLowerCase())
-  return !labels.includes(IN_PROGRESS_LABEL) && !labels.includes(UNDER_REVIEW_LABEL)
+  return (
+    !labels.includes(cfgLabels.inProgress.toLowerCase()) &&
+    !labels.includes(cfgLabels.underReview.toLowerCase())
+  )
 }
 
 export class IssueTracker {
   #gh: string
   #cwd: string
+  #readyLabel: string
 
-  constructor(ghCmd: string, cwd: string) {
+  constructor(ghCmd: string, cwd: string, readyLabel: string) {
     this.#gh = ghCmd
     this.#cwd = cwd
+    this.#readyLabel = readyLabel
   }
 
   #run(args: string[]): Promise<string> {
@@ -70,7 +78,7 @@ export class IssueTracker {
     const out = await this.#run([
       'issue', 'list',
       '--state', 'open',
-      '--label', READY_LABEL,
+      '--label', this.#readyLabel,
       '--limit', '200',
       '--json', 'number,title,body,labels',
     ])

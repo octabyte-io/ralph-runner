@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseBlockedBy, priorityRank, sortByPriority, isWorkable } from '../src/issues.ts'
 import type { Issue } from '../src/issues.ts'
+import { DEFAULT_LABELS, DEFAULT_PRIORITY } from '../src/config.ts'
 
 const issue = (partial: Partial<Issue>): Issue => ({
   number: 1,
@@ -35,7 +36,7 @@ test('priority: bug > tracer > polish > other > refactor', () => {
   const polish = issue({ number: 12, title: 'Polish error messages' })
   const other = issue({ number: 13, title: 'Slice 4: something' })
   const refactor = issue({ number: 14, title: 'Refactor planner' })
-  const sorted = sortByPriority([refactor, other, polish, tracer, bug])
+  const sorted = sortByPriority([refactor, other, polish, tracer, bug], DEFAULT_PRIORITY)
   assert.deepEqual(
     sorted.map((i) => i.number),
     [10, 11, 12, 13, 14],
@@ -45,17 +46,35 @@ test('priority: bug > tracer > polish > other > refactor', () => {
 test('priority ties break by ascending issue number', () => {
   const a = issue({ number: 25, title: 'Slice 3' })
   const b = issue({ number: 23, title: 'Slice 1' })
-  assert.deepEqual(sortByPriority([a, b]).map((i) => i.number), [23, 25])
+  assert.deepEqual(sortByPriority([a, b], DEFAULT_PRIORITY).map((i) => i.number), [23, 25])
 })
 
 test('priorityRank is stable for unknown shapes', () => {
-  assert.equal(priorityRank(issue({ title: 'Slice 1: persistence' })), 3)
+  assert.equal(priorityRank(issue({ title: 'Slice 1: persistence' }), DEFAULT_PRIORITY), 3)
+})
+
+test('priorityRank honors custom label and title rules', () => {
+  const custom = {
+    labelRanks: { hotfix: 0 },
+    titleRanks: [{ pattern: 'spike', rank: 5 }],
+    defaultRank: 2,
+  }
+  assert.equal(priorityRank(issue({ labels: ['hotfix'] }), custom), 0)
+  assert.equal(priorityRank(issue({ title: 'Spike: try the thing' }), custom), 5)
+  assert.equal(priorityRank(issue({ labels: ['bug'] }), custom), 2) // 'bug' unknown here
 })
 
 test('isWorkable skips PRDs and in-flight labels', () => {
-  assert.equal(isWorkable(issue({ title: 'PRD: Phase 3 — Generation' })), false)
-  assert.equal(isWorkable(issue({ title: 'prd: lowercase' })), false)
-  assert.equal(isWorkable(issue({ labels: ['in progress'] })), false)
-  assert.equal(isWorkable(issue({ labels: ['under review'] })), false)
-  assert.equal(isWorkable(issue({ title: 'Slice 1: build the thing' })), true)
+  assert.equal(isWorkable(issue({ title: 'PRD: Phase 3 — Generation' }), DEFAULT_LABELS), false)
+  assert.equal(isWorkable(issue({ title: 'prd: lowercase' }), DEFAULT_LABELS), false)
+  assert.equal(isWorkable(issue({ labels: ['in progress'] }), DEFAULT_LABELS), false)
+  assert.equal(isWorkable(issue({ labels: ['under review'] }), DEFAULT_LABELS), false)
+  assert.equal(isWorkable(issue({ title: 'Slice 1: build the thing' }), DEFAULT_LABELS), true)
+})
+
+test('isWorkable respects custom labels', () => {
+  const labels = { ...DEFAULT_LABELS, inProgress: 'wip', underReview: 'needs-human' }
+  assert.equal(isWorkable(issue({ labels: ['wip'] }), labels), false)
+  assert.equal(isWorkable(issue({ labels: ['Needs-Human'] }), labels), false)
+  assert.equal(isWorkable(issue({ labels: ['in progress'] }), labels), true)
 })

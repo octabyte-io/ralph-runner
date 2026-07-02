@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import type { RalphConfig } from './config.ts'
-import { chromeEnabled, IN_PROGRESS_LABEL, TODO_LABEL, UNDER_REVIEW_LABEL } from './config.ts'
+import { chromeEnabled } from './config.ts'
 import { IssueTracker, parseBlockedBy, sortByPriority, isWorkable } from './issues.ts'
 import type { Issue } from './issues.ts'
 import { MergeQueue, mergeAndVerify } from './merge.ts'
@@ -67,7 +67,7 @@ export class Scheduler {
     this.#cfg = cfg
     this.#ui = ui
     this.#abort = abort
-    this.#tracker = new IssueTracker(cfg.ghCmd, cfg.repoRoot)
+    this.#tracker = new IssueTracker(cfg.ghCmd, cfg.repoRoot, cfg.labels.ready)
   }
 
   async run(): Promise<RunSummary> {
@@ -121,7 +121,7 @@ export class Scheduler {
         existing.issue = issue
         continue
       }
-      if (!isWorkable(issue)) continue
+      if (!isWorkable(issue, this.#cfg.labels)) continue
       this.#tracked.set(issue.number, {
         issue,
         state: 'BLOCKED',
@@ -178,6 +178,7 @@ export class Scheduler {
     ).length
     const ready = sortByPriority(
       [...this.#tracked.values()].filter((t) => t.state === 'READY').map((t) => t.issue),
+      this.#cfg.priority,
     )
     for (const issue of ready.slice(0, Math.max(0, this.#cfg.concurrency - busy))) {
       const task = this.#workIssue(this.#tracked.get(issue.number)!).catch((err) => {
@@ -203,9 +204,10 @@ export class Scheduler {
     t.activity = 'creating worktree'
     this.#pushSnapshot()
 
-    await this.#tracker.setLabels(number, { add: [IN_PROGRESS_LABEL], remove: [TODO_LABEL] })
-    // worktree creation forks from main → serialize with merges
-    const worktree = await this.#queue.enqueue(() => createWorktree(this.#cfg.repoRoot, number))
+    const labels = this.#cfg.labels
+    await this.#tracker.setLabels(number, { add: [labels.inProgress], remove: [labels.todo] })
+    // worktree creation forks from the main branch → serialize with merges
+    const worktree = await this.#queue.enqueue(() => createWorktree(this.#cfg, number))
     this.#ui.event(`started #${number} ${t.issue.title}`)
 
     t.activity = 'agent starting'
@@ -222,14 +224,11 @@ export class Scheduler {
       this.#cfg.issues?.length ?? Number.POSITIVE_INFINITY,
     )
     const outcome = await runAgent({
-      repoRoot: this.#cfg.repoRoot,
+      cfg: this.#cfg,
       issue: number,
       worktree,
       prompt,
       chrome: chromeEnabled(this.#cfg, effectiveConcurrency),
-      maxMinutes: this.#cfg.maxMinutes,
-      logDir: this.#cfg.logDir,
-      claudeCmd: this.#cfg.claudeCmd,
       signal: this.#abort,
       onEvent: (event) => {
         t.activity = describeActivity(event, worktree) ?? t.activity
@@ -250,10 +249,8 @@ export class Scheduler {
     this.#pushSnapshot()
     const result = await this.#queue.enqueue(() =>
       mergeAndVerify({
-        repoRoot: this.#cfg.repoRoot,
+        cfg: this.#cfg,
         issue: number,
-        smoke: this.#cfg.smoke,
-        verifyCmd: this.#cfg.verifyCmd,
         onProgress: (step) => {
           t.activity = step
           this.#pushSnapshot()
@@ -265,11 +262,11 @@ export class Scheduler {
       const cost = outcome.costUsd !== undefined ? ` ($${outcome.costUsd.toFixed(2)})` : ''
       await this.#tracker.close(
         number,
-        `Completed by RALPH agent — merged to main and verified (\`pnpm run test\`${this.#cfg.smoke ? ' + smoke' : ''} green).\n\n${outcome.resultText.slice(0, 1500)}`,
+        `Completed by RALPH agent — merged to ${this.#cfg.mainBranch} and verified (\`${this.#cfg.verifyCommand}\`${this.#cfg.smoke ? ' + smoke' : ''} green).\n\n${outcome.resultText.slice(0, 1500)}`,
       )
-      await this.#tracker.setLabels(number, { remove: [IN_PROGRESS_LABEL] })
-      await removeWorktree(this.#cfg.repoRoot, number)
-      await deleteBranch(this.#cfg.repoRoot, number)
+      await this.#tracker.setLabels(number, { remove: [labels.inProgress] })
+      await removeWorktree(this.#cfg, number)
+      await deleteBranch(this.#cfg, number)
       t.state = 'MERGED'
       this.#ui.event(`merged #${number} ${t.issue.title}${cost}`)
       this.#wakeUp() // dependents may have unblocked
@@ -305,11 +302,11 @@ export class Scheduler {
       ].join('\n'),
     )
     await this.#tracker.setLabels(number, {
-      remove: [IN_PROGRESS_LABEL],
-      add: kind === 'blocked' ? [] : [UNDER_REVIEW_LABEL],
+      remove: [this.#cfg.labels.inProgress],
+      add: kind === 'blocked' ? [] : [this.#cfg.labels.underReview],
     })
-    await removeWorktree(this.#cfg.repoRoot, number)
-    if (!keepBranch) await deleteBranch(this.#cfg.repoRoot, number, true)
+    await removeWorktree(this.#cfg, number)
+    if (!keepBranch) await deleteBranch(this.#cfg, number, true)
     this.#ui.event(`FAILED #${number} (${kind})${keepBranch ? ` — branch ${branchName(number)} kept` : ''}`)
   }
 

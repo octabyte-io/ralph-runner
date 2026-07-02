@@ -3,6 +3,7 @@ import { createWriteStream, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { NdjsonDecoder, assistantText } from './stream.ts'
 import type { StreamEvent, AssistantEvent, ResultEvent } from './stream.ts'
+import type { RalphConfig } from './config.ts'
 import { TranscriptRenderer } from './render/transcript.ts'
 import { commitsAhead } from './worktree.ts'
 
@@ -17,14 +18,11 @@ export interface AgentOutcome {
 }
 
 export interface RunAgentOptions {
-  repoRoot: string
+  cfg: RalphConfig
   issue: number
   worktree: string
   prompt: string
   chrome: boolean
-  maxMinutes: number
-  logDir: string
-  claudeCmd: string
   onEvent?: (event: StreamEvent) => void
   signal?: AbortSignal
 }
@@ -37,9 +35,10 @@ const BLOCKED_SENTINEL = /<ralph>\s*BLOCKED:?\s*([^<]*)<\/ralph>/i
  * rendered transcript into the log dir, and classifies the outcome.
  */
 export async function runAgent(opts: RunAgentOptions): Promise<AgentOutcome> {
-  mkdirSync(opts.logDir, { recursive: true })
-  const rawLog = createWriteStream(join(opts.logDir, `issue-${opts.issue}.jsonl`))
-  const renderedLog = createWriteStream(join(opts.logDir, `issue-${opts.issue}.log`))
+  const { cfg } = opts
+  mkdirSync(cfg.logDir, { recursive: true })
+  const rawLog = createWriteStream(join(cfg.logDir, `issue-${opts.issue}.jsonl`))
+  const renderedLog = createWriteStream(join(cfg.logDir, `issue-${opts.issue}.log`))
   const transcript = new TranscriptRenderer({
     color: false,
     cwd: opts.worktree,
@@ -54,7 +53,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentOutcome> {
   ]
   if (opts.chrome) args.push('--chrome')
 
-  const child = spawn(opts.claudeCmd, args, {
+  const child = spawn(cfg.claudeCmd, args, {
     cwd: opts.worktree,
     env: process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -65,7 +64,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentOutcome> {
     killedForTimeout = true
     child.kill('SIGTERM')
     setTimeout(() => child.kill('SIGKILL'), 10_000).unref()
-  }, opts.maxMinutes * 60_000)
+  }, cfg.maxMinutes * 60_000)
 
   const onAbort = () => child.kill('SIGTERM')
   opts.signal?.addEventListener('abort', onAbort, { once: true })
@@ -109,7 +108,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentOutcome> {
   rawLog.end()
   renderedLog.end()
 
-  const commits = await commitsAhead(opts.repoRoot, opts.issue)
+  const commits = await commitsAhead(cfg, opts.issue)
   const resultText = resultEvent?.result ?? finalAssistantText
   const outcomeBase = {
     commits,
@@ -123,7 +122,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentOutcome> {
     return { ...outcomeBase, status: 'failed', reason: 'run aborted' }
   }
   if (killedForTimeout) {
-    return { ...outcomeBase, status: 'failed', reason: `timed out after ${opts.maxMinutes} minutes` }
+    return { ...outcomeBase, status: 'failed', reason: `timed out after ${cfg.maxMinutes} minutes` }
   }
   const blocked = (resultText + finalAssistantText).match(BLOCKED_SENTINEL)
   if (blocked) {

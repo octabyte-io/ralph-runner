@@ -25,3 +25,7 @@ pnpm-debug.log*
 # Test / coverage
 coverage/
 .nyc_output/
+
+# ralph runtime
+.worktrees/
+.ralph/logs/
